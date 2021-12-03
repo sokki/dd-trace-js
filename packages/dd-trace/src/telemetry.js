@@ -45,10 +45,13 @@ function getDependencies () {
   return deps
 }
 
-function flatten (input, result = {}, prefix = []) {
+function flatten (input, maxDepth, result = {}, prefix = []) {
+  if (maxDepth === 0) {
+    return result
+  }
   for (const [key, value] of Object.entries(input)) {
     if (typeof value === 'object' && value !== null) {
-      flatten(value, result, [...prefix, key])
+      flatten(value, maxDepth - 1, result, [...prefix, key])
     } else {
       result[[...prefix, key].join('.')] = value
     }
@@ -60,7 +63,7 @@ function appStarted () {
   return {
     integrations: getIntegrations(),
     dependencies: getDependencies(),
-    configuration: flatten(config),
+    configuration: flatten(config, 3),
     additional_payload: {}
   }
 }

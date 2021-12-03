@@ -62,6 +62,12 @@ describe('telemetry', () => {
       [{ name: 'bar' }, {}]
     ])
 
+    const circularObject = {
+      child: { parent: null, field: 'child_value' },
+      field: 'parent_value'
+    }
+    circularObject.child.parent = circularObject
+
     telemetry.start({
       telemetryEnabled: true,
       hostname: 'localhost',
@@ -71,7 +77,8 @@ describe('telemetry', () => {
       env: 'preprod',
       tags: {
         'runtime-id': '1a2b3c'
-      }
+      },
+      circularObject
     }, {
       _instrumented: instrumentedMap
     })
@@ -98,7 +105,9 @@ describe('telemetry', () => {
           service: 'test service',
           version: '1.2.3-beta4',
           env: 'preprod',
-          'tags.runtime-id': '1a2b3c'
+          'tags.runtime-id': '1a2b3c',
+          'circularObject.field': 'parent_value',
+          'circularObject.child.field': 'child_value'
         }
       })
     })
