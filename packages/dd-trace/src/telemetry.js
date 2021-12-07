@@ -45,13 +45,15 @@ function getDependencies () {
   return deps
 }
 
-function flatten (input, maxDepth, result = {}, prefix = []) {
-  if (maxDepth === 0) {
-    return result
+function flatten (input, result = {}, prefix = [], traversedObjects = null) {
+  traversedObjects = traversedObjects ? traversedObjects : new WeakSet()
+  if (traversedObjects.has(input)) {
+    return
   }
+  traversedObjects.add(input)
   for (const [key, value] of Object.entries(input)) {
     if (typeof value === 'object' && value !== null) {
-      flatten(value, maxDepth - 1, result, [...prefix, key])
+      flatten(value, result, [...prefix, key], traversedObjects)
     } else {
       result[[...prefix, key].join('.')] = value
     }
@@ -63,7 +65,7 @@ function appStarted () {
   return {
     integrations: getIntegrations(),
     dependencies: getDependencies(),
-    configuration: flatten(config, 3),
+    configuration: flatten(config),
     additional_payload: {}
   }
 }

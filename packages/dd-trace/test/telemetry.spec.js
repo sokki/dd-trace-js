@@ -164,12 +164,9 @@ async function testSeq (seqId, reqType, validatePayload) {
     await once(traceAgent, 'handled-req')
   }
   const req = traceAgent.reqs[seqId - 1]
-  const backendHost = 'tracer-telemetry-edge.datadoghq.com'
-  const backendUrl = `https://${backendHost}/api/v2/apmtelemetry`
   expect(req.method).to.equal('POST')
-  expect(req.url).to.equal(backendUrl)
+  expect(req.url).to.equal(`/telemetry/proxy/api/v2/apmtelemetry`)
   expect(req.headers).to.include({
-    host: backendHost,
     'content-type': 'application/json',
     'dd-telemetry-api-version': 'v1',
     'dd-telemetry-request-type': reqType
