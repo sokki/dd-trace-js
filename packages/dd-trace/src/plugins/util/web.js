@@ -22,6 +22,7 @@ const HTTP_STATUS_CODE = tags.HTTP_STATUS_CODE
 const HTTP_ROUTE = tags.HTTP_ROUTE
 const HTTP_REQUEST_HEADERS = tags.HTTP_REQUEST_HEADERS
 const HTTP_RESPONSE_HEADERS = tags.HTTP_RESPONSE_HEADERS
+const MANUAL_DROP = tags.MANUAL_DROP
 
 const HTTP2_HEADER_AUTHORITY = ':authority'
 const HTTP2_HEADER_SCHEME = ':scheme'
@@ -53,9 +54,8 @@ const web = {
 
     const span = startSpan(tracer, config, req, res, name)
 
-    // TODO: replace this with a REFERENCE_NOOP after we split http/express/etc
     if (!config.filter(req.url)) {
-      span.context()._traceFlags.sampled = false
+      span.setTag(MANUAL_DROP, true)
     }
 
     if (config.service) {
@@ -181,7 +181,11 @@ const web = {
 
   // Extract the parent span from the headers and start a new span as its child
   startChildSpan (tracer, name, headers) {
-    const childOf = tracer.scope().active() || tracer.extract(FORMAT_HTTP_HEADERS, headers)
+    headers = { ...headers }
+
+    const childOf = tracer.scope().active() ||
+      tracer.extract(FORMAT_HTTP_HEADERS, headers) ||
+      tracer.extract(FORMAT_HTTP_HEADERS, sqsdToCarrier(headers))
     const span = tracer.startSpan(name, { childOf })
 
     return span
@@ -307,7 +311,7 @@ function addAllowHeaders (req, headers) {
   const contextHeaders = [
     'x-datadog-origin',
     'x-datadog-parent-id',
-    'x-datadog-sampled',
+    'x-datadog-sampled', // Deprecated, but still accept it in case it's sent.
     'x-datadog-sampling-priority',
     'x-datadog-trace-id'
   ]
@@ -461,6 +465,18 @@ function getMiddlewareSetting (config) {
   }
 
   return true
+}
+
+function sqsdToCarrier (carrier) {
+  const headerValue = carrier['x-aws-sqsd-attr-_datadog']
+
+  if (!headerValue) return null
+
+  try {
+    return JSON.parse(headerValue)
+  } catch (e) {
+    return null
+  }
 }
 
 module.exports = web
