@@ -1,6 +1,24 @@
 'use strict'
 
+// TODO: always use uppercase for command names
+
 const tx = require('../../dd-trace/src/plugins/util/redis')
+
+function createWrapAddCommand (tracer, config) {
+  return function wrapAddCommand (addCommand) {
+    return function addCommandWithTrace (command) {
+      const name = command[0]
+      const args = command.slice(1)
+
+      if (!config.filter(name)) return addCommand.apply(this, arguments)
+
+      const scope = tracer.scope()
+      const span = startSpan(tracer, config, this, name, args)
+
+      return tx.wrap(span, scope.bind(addCommand, span).apply(this, arguments))
+    }
+  }
+}
 
 function createWrapInternalSendCommand (tracer, config) {
   return function wrapInternalSendCommand (internalSendCommand) {
@@ -12,7 +30,7 @@ function createWrapInternalSendCommand (tracer, config) {
 
       options.callback = scope.bind(tx.wrap(span, options.callback))
 
-      return scope.bind(internalSendCommand, span).call(this, options)
+      return scope.bind(internalSendCommand, span).apply(this, arguments)
     }
   }
 }
@@ -26,14 +44,14 @@ function createWrapSendCommand (tracer, config) {
       const span = startSpan(tracer, config, this, command, args)
 
       if (typeof callback === 'function') {
-        callback = scope.bind(tx.wrap(span, callback))
+        arguments[2] = scope.bind(tx.wrap(span, callback))
       } else if (Array.isArray(args) && typeof args[args.length - 1] === 'function') {
         args[args.length - 1] = scope.bind(tx.wrap(span, args[args.length - 1]))
       } else {
-        callback = tx.wrap(span)
+        arguments[2] = tx.wrap(span)
       }
 
-      return scope.bind(sendCommand, span).call(this, command, args, callback)
+      return scope.bind(sendCommand, span).apply(this, arguments)
     }
   }
 }
@@ -50,8 +68,20 @@ function startSpan (tracer, config, client, command, args) {
 
 module.exports = [
   {
+    name: '@node-redis/client',
+    versions: ['>=1'],
+    file: 'dist/lib/client/commands-queue.js',
+    patch (redis, tracer, config) {
+      config = tx.normalizeConfig(config)
+      this.wrap(redis.default.prototype, 'addCommand', createWrapAddCommand(tracer, config))
+    },
+    unpatch (redis) {
+      this.unwrap(redis.default.prototype, 'addCommand')
+    }
+  },
+  {
     name: 'redis',
-    versions: ['>=2.6'],
+    versions: ['>=2.6 <4'],
     patch (redis, tracer, config) {
       config = tx.normalizeConfig(config)
       this.wrap(redis.RedisClient.prototype, 'internal_send_command', createWrapInternalSendCommand(tracer, config))

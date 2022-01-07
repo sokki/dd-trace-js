@@ -4,7 +4,13 @@ const retry = require('retry')
 const { request } = require('http')
 const FormData = require('form-data')
 
-function sendRequest (options, body, callback) {
+// TODO: avoid using dd-trace internals. Make this a separate module?
+const docker = require('../../exporters/agent/docker')
+const version = require('../../../lib/version')
+
+const containerId = docker.id()
+
+function sendRequest (options, form, callback) {
   const req = request(options, res => {
     if (res.statusCode >= 400) {
       const error = new Error(`HTTP Error ${res.statusCode}`)
@@ -15,7 +21,7 @@ function sendRequest (options, body, callback) {
     }
   })
   req.on('error', callback)
-  if (body) req.write(body)
+  if (form) form.pipe(req)
   req.end()
 }
 
@@ -34,7 +40,7 @@ function computeRetries (uploadTimeout) {
     tries++
     uploadTimeout /= 2
   }
-  return [tries, uploadTimeout]
+  return [tries, Math.floor(uploadTimeout)]
 }
 
 class AgentExporter {
@@ -57,10 +63,14 @@ class AgentExporter {
       ['recording-end', end.toISOString()],
       ['language', 'javascript'],
       ['runtime', 'nodejs'],
+      ['runtime_version', process.version],
+      ['profiler_version', version],
       ['format', 'pprof'],
 
       ['tags[]', 'language:javascript'],
       ['tags[]', 'runtime:nodejs'],
+      ['tags[]', `runtime_version:${process.version}`],
+      ['tags[]', `profiler_version:${version}`],
       ['tags[]', 'format:pprof'],
       ...Object.entries(tags).map(([key, value]) => ['tags[]', `${key}:${value}`])
     ]
@@ -91,11 +101,14 @@ class AgentExporter {
       })
     }
 
-    const body = form.getBuffer()
     const options = {
       method: 'POST',
       path: '/profiling/v1/input',
       headers: form.getHeaders()
+    }
+
+    if (containerId) {
+      options.headers['Datadog-Container-ID'] = containerId
     }
 
     if (this._url.protocol === 'unix:') {
@@ -118,8 +131,8 @@ class AgentExporter {
       })
 
       operation.attempt((attempt) => {
-        const timeout = Math.pow(this._backoffTime, attempt)
-        sendRequest({ ...options, timeout }, body, (err, response) => {
+        const timeout = this._backoffTime * Math.pow(2, attempt)
+        sendRequest({ ...options, timeout }, form, (err, response) => {
           if (operation.retry(err)) {
             this._logger.error(`Error from the agent: ${err.message}`)
             return
@@ -146,4 +159,4 @@ class AgentExporter {
   }
 }
 
-module.exports = { AgentExporter }
+module.exports = { AgentExporter, computeRetries }

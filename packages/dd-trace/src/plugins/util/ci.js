@@ -88,6 +88,7 @@ function resolveTilde (filePath) {
 }
 
 module.exports = {
+  normalizeRef,
   getCIMetadata () {
     const { env } = process
 
@@ -142,7 +143,7 @@ module.exports = {
         CI_PIPELINE_IID,
         CI_PIPELINE_URL: GITLAB_PIPELINE_URL,
         CI_PROJECT_DIR,
-        CI_COMMIT_BRANCH,
+        CI_COMMIT_REF_NAME,
         CI_COMMIT_TAG,
         CI_COMMIT_SHA,
         CI_REPOSITORY_URL,
@@ -165,7 +166,7 @@ module.exports = {
         [GIT_REPOSITORY_URL]: CI_REPOSITORY_URL,
         [CI_JOB_URL]: GITLAB_CI_JOB_URL,
         [GIT_TAG]: CI_COMMIT_TAG,
-        [GIT_BRANCH]: CI_COMMIT_BRANCH,
+        [GIT_BRANCH]: CI_COMMIT_REF_NAME,
         [CI_WORKSPACE_PATH]: CI_PROJECT_DIR,
         [CI_PIPELINE_URL]: GITLAB_PIPELINE_URL && GITLAB_PIPELINE_URL.replace('/-/pipelines/', '/pipelines/'),
         [CI_STAGE_NAME]: CI_JOB_STAGE,
@@ -215,11 +216,19 @@ module.exports = {
         GITHUB_HEAD_REF,
         GITHUB_REF,
         GITHUB_SHA,
-        GITHUB_REPOSITORY
+        GITHUB_REPOSITORY,
+        GITHUB_SERVER_URL,
+        GITHUB_RUN_ATTEMPT
       } = env
 
-      const repositoryURL = `https://github.com/${GITHUB_REPOSITORY}.git`
-      const pipelineURL = `https://github.com/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}/checks`
+      const repositoryURL = `${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git`
+      let pipelineURL = `${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}`
+
+      if (GITHUB_RUN_ATTEMPT) {
+        pipelineURL = `${pipelineURL}/attempts/${GITHUB_RUN_ATTEMPT}`
+      }
+
+      const jobUrl = `${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}/checks`
 
       const ref = GITHUB_HEAD_REF || GITHUB_REF || ''
       const refKey = ref.includes('tags') ? GIT_TAG : GIT_BRANCH
@@ -232,7 +241,7 @@ module.exports = {
         [CI_PROVIDER_NAME]: 'github',
         [GIT_COMMIT_SHA]: GITHUB_SHA,
         [GIT_REPOSITORY_URL]: repositoryURL,
-        [CI_JOB_URL]: pipelineURL,
+        [CI_JOB_URL]: jobUrl,
         [CI_WORKSPACE_PATH]: GITHUB_WORKSPACE,
         [refKey]: ref
       }
@@ -299,11 +308,13 @@ module.exports = {
         BUILD_SOURCEVERSION,
         BUILD_REQUESTEDFORID,
         BUILD_REQUESTEDFOREMAIL,
-        BUILD_SOURCEVERSIONMESSAGE
+        BUILD_SOURCEVERSIONMESSAGE,
+        SYSTEM_STAGEDISPLAYNAME,
+        SYSTEM_JOBDISPLAYNAME
       } = env
 
       const ref = SYSTEM_PULLREQUEST_SOURCEBRANCH || BUILD_SOURCEBRANCH || BUILD_SOURCEBRANCHNAME
-      const refKey = ref.includes('tags') ? GIT_TAG : GIT_BRANCH
+      const refKey = (ref || '').includes('tags') ? GIT_TAG : GIT_BRANCH
 
       tags = {
         [CI_PROVIDER_NAME]: 'azurepipelines',
@@ -316,7 +327,9 @@ module.exports = {
         [refKey]: ref,
         [GIT_COMMIT_AUTHOR_NAME]: BUILD_REQUESTEDFORID,
         [GIT_COMMIT_AUTHOR_EMAIL]: BUILD_REQUESTEDFOREMAIL,
-        [GIT_COMMIT_MESSAGE]: BUILD_SOURCEVERSIONMESSAGE
+        [GIT_COMMIT_MESSAGE]: BUILD_SOURCEVERSIONMESSAGE,
+        [CI_STAGE_NAME]: SYSTEM_STAGEDISPLAYNAME,
+        [CI_JOB_NAME]: SYSTEM_JOBDISPLAYNAME
       }
 
       if (SYSTEM_TEAMFOUNDATIONSERVERURI && SYSTEM_TEAMPROJECTID && BUILD_BUILDID) {

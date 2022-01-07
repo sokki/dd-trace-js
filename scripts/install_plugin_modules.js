@@ -4,24 +4,37 @@ const fs = require('fs')
 const path = require('path')
 const crypto = require('crypto')
 const semver = require('semver')
+const proxyquire = require('proxyquire')
 const exec = require('./helpers/exec')
+const childProcess = require('child_process')
 const plugins = require('../packages/dd-trace/src/plugins')
+const Plugin = require('../packages/dd-trace/src/plugins/plugin')
 const externals = require('../packages/dd-trace/test/plugins/externals')
 
 const requirePackageJsonPath = require.resolve('../packages/dd-trace/src/require-package-json')
 
 const workspaces = new Set()
+const versionLists = {}
+const deps = {}
+Object.keys(externals).forEach(external => externals[external].forEach(thing => {
+  if (thing.dep) {
+    if (!deps[external]) {
+      deps[external] = []
+    }
+    deps[external].push(thing.name)
+  }
+}))
 
 run()
 
-function run () {
+async function run () {
   assertFolder()
-  assertVersions()
+  await assertVersions()
   assertWorkspace()
   install()
 }
 
-function assertVersions () {
+async function assertVersions () {
   let filter = []
   let names = Object.keys(plugins)
 
@@ -31,36 +44,60 @@ function assertVersions () {
   }
 
   const internals = names
-    .map(key => plugins[key])
+    .map(key => {
+      const plugin = plugins[key]
+      if (plugin.prototype instanceof Plugin) {
+        const instrumentations = []
+        const instrument = {
+          addHook (instrumentation) {
+            instrumentations.push(instrumentation)
+          }
+        }
+        const instPath = path.join(
+          __dirname,
+          `../packages/datadog-instrumentations/src/${plugin.name}.js`
+        )
+        proxyquire.noPreserveCache()(instPath, {
+          './helpers/instrument': instrument
+        })
+        return instrumentations
+      } else {
+        return plugin
+      }
+    })
     .reduce((prev, next) => prev.concat(next), [])
 
-  internals.forEach((inst) => {
-    assertInstrumentation(inst, false)
-  })
+  for (const inst of internals) {
+    await assertInstrumentation(inst, false)
+  }
 
-  Object.keys(externals)
-    .filter(name => ~names.indexOf(name))
-    .forEach(name => {
-      [].concat(externals[name]).forEach(inst => assertInstrumentation(inst, true))
-    })
-}
-
-function assertInstrumentation (instrumentation, external) {
-  [].concat(instrumentation.versions).forEach(version => {
-    if (version) {
-      assertModules(instrumentation.name, semver.coerce(version).version, external)
-      assertModules(instrumentation.name, version, external)
+  const externalNames = Object.keys(externals).filter(name => ~names.indexOf(name))
+  for (const name of externalNames) {
+    for (const inst of [].concat(externals[name])) {
+      if (!inst.dep) {
+        await assertInstrumentation(inst, true)
+      }
     }
-  })
+  }
 }
 
-function assertModules (name, version, external) {
+async function assertInstrumentation (instrumentation, external) {
+  const versions = [].concat(instrumentation.versions)
+  for (const version of versions) {
+    if (version) {
+      await assertModules(instrumentation.name, semver.coerce(version).version, external)
+      await assertModules(instrumentation.name, version, external)
+    }
+  }
+}
+
+async function assertModules (name, version, external) {
   addFolder(name)
   addFolder(name, version)
   assertFolder(name)
   assertFolder(name, version)
-  assertPackage(name, null, version, external)
-  assertPackage(name, version, version, external)
+  await assertPackage(name, null, version, external)
+  await assertPackage(name, version, version, external)
   assertIndex(name)
   assertIndex(name, version)
 }
@@ -79,15 +116,17 @@ function assertFolder (name, version) {
   }
 }
 
-function assertPackage (name, version, dependency, external) {
+async function assertPackage (name, version, dependency, external) {
+  const dependencies = { [name]: dependency }
+  if (deps[name]) {
+    await addDependencies(dependencies, name, dependency)
+  }
   const pkg = {
     name: [name, sha1(name).substr(0, 8), sha1(version)].filter(val => val).join('-'),
     version: '1.0.0',
     license: 'BSD-3-Clause',
     private: true,
-    dependencies: {
-      [name]: dependency
-    }
+    dependencies
   }
 
   if (!external) {
@@ -96,6 +135,41 @@ function assertPackage (name, version, dependency, external) {
     }
   }
   fs.writeFileSync(filename(name, version, 'package.json'), JSON.stringify(pkg, null, 2) + '\n')
+}
+
+async function addDependencies (dependencies, name, versionRange) {
+  const versionList = await getVersionList(name)
+  const version = semver.maxSatisfying(versionList, versionRange)
+  const pkgJson = await npmView(`${name}@${version}`)
+  for (const dep of deps[name]) {
+    for (const section of ['devDependencies', 'peerDependencies']) {
+      if (pkgJson[section] && dep in pkgJson[section]) {
+        dependencies[dep] = pkgJson[section][dep]
+        break
+      }
+    }
+  }
+}
+
+async function getVersionList (name) {
+  if (versionLists[name]) {
+    return versionLists[name]
+  }
+  const list = await npmView(`${name} versions`)
+  versionLists[name] = list
+  return list
+}
+
+function npmView (input) {
+  return new Promise((resolve, reject) => {
+    childProcess.exec(`npm view ${input} --json`, (err, stdout) => {
+      if (err) {
+        reject(err)
+        return
+      }
+      resolve(JSON.parse(stdout.toString('utf8')))
+    })
+  })
 }
 
 function assertIndex (name, version) {

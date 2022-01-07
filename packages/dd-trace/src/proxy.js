@@ -5,6 +5,7 @@ const NoopTracer = require('./noop/tracer')
 const DatadogTracer = require('./tracer')
 const Config = require('./config')
 const Instrumenter = require('./instrumenter')
+const PluginManager = require('./plugin_manager')
 const metrics = require('./metrics')
 const log = require('./log')
 const { setStartupLogInstrumenter } = require('./startup-log')
@@ -17,6 +18,7 @@ class Tracer extends BaseTracer {
     super()
     this._tracer = noop
     this._instrumenter = new Instrumenter(this)
+    this._pluginManager = new PluginManager(this)
     this._deprecate = method => log.deprecate(`tracer.${method}`, [
       `tracer.${method}() is deprecated.`,
       'Please use tracer.startSpan() and tracer.scope() instead.',
@@ -47,13 +49,14 @@ class Tracer extends BaseTracer {
             metrics.start(config)
           }
 
-          // dirty require for now so zero appsec code is executed unless explicitely enabled
+          // dirty require for now so zero appsec code is executed unless explicitly enabled
           if (config.appsec.enabled) {
             require('./appsec').enable(config)
           }
 
           this._tracer = new DatadogTracer(config)
           this._instrumenter.enable(config)
+          this._pluginManager.configure(config)
           setStartupLogInstrumenter(this._instrumenter)
           telemetry.start(config, this._instrumenter)
         }
@@ -66,7 +69,8 @@ class Tracer extends BaseTracer {
   }
 
   use () {
-    this._instrumenter.use.apply(this._instrumenter, arguments)
+    this._instrumenter.use(...arguments)
+    this._pluginManager.configurePlugin(...arguments)
     return this
   }
 

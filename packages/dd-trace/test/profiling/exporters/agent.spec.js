@@ -1,17 +1,21 @@
 'use strict'
 
 const expect = require('chai').expect
+const sinon = require('sinon')
 const express = require('express')
 const upload = require('multer')()
 const os = require('os')
 const path = require('path')
+const { request } = require('http')
 const getPort = require('get-port')
+const proxyquire = require('proxyquire')
 const { gunzipSync } = require('zlib')
 const CpuProfiler = require('../../../src/profiling/profilers/cpu')
 const HeapProfiler = require('../../../src/profiling/profilers/heap')
 const logger = require('../../../src/log')
 const { perftools } = require('@datadog/pprof/proto/profile')
 const semver = require('semver')
+const version = require('../../../lib/version')
 
 if (!semver.satisfies(process.version, '>=10.12')) {
   describe = describe.skip // eslint-disable-line no-global-assign
@@ -52,9 +56,25 @@ describe('exporters/agent', () => {
   let url
   let listener
   let app
+  let docker
+  let http
+  let computeRetries
 
   beforeEach(() => {
-    AgentExporter = require('../../../src/profiling/exporters/agent').AgentExporter
+    docker = {
+      id () {
+        return 'container-id'
+      }
+    }
+    http = {
+      request: sinon.spy(request)
+    }
+    const agent = proxyquire('../../../src/profiling/exporters/agent', {
+      '../../exporters/agent/docker': docker,
+      'http': http
+    })
+    AgentExporter = agent.AgentExporter
+    computeRetries = agent.computeRetries
     sockets = []
     app = express()
   })
@@ -95,12 +115,17 @@ describe('exporters/agent', () => {
       await new Promise((resolve, reject) => {
         app.post('/profiling/v1/input', upload.any(), (req, res) => {
           try {
+            expect(req.headers).to.have.property('datadog-container-id', docker.id())
             expect(req.body).to.have.property('language', 'javascript')
             expect(req.body).to.have.property('runtime', 'nodejs')
+            expect(req.body).to.have.property('runtime_version', process.version)
+            expect(req.body).to.have.property('profiler_version', version)
             expect(req.body).to.have.property('format', 'pprof')
             expect(req.body).to.have.deep.property('tags', [
               'language:javascript',
               'runtime:nodejs',
+              `runtime_version:${process.version}`,
+              `profiler_version:${version}`,
               'format:pprof',
               'runtime-id:a1b2c3d4-a1b2-a1b2-a1b2-a1b2c3d4e5f6'
             ])
@@ -140,10 +165,11 @@ describe('exporters/agent', () => {
     })
 
     it('should backoff up to the uploadTimeout', async () => {
+      const uploadTimeout = 100
       const exporter = new AgentExporter({
         url,
         logger,
-        uploadTimeout: 100
+        uploadTimeout
       })
 
       const start = new Date()
@@ -180,12 +206,33 @@ describe('exporters/agent', () => {
       }
       expect(failed).to.be.true
       expect(attempt).to.be.greaterThan(0)
+
+      // Verify computeRetries produces correct starting values
+      for (let i = 1; i <= 100; i++) {
+        const [retries, timeout] = computeRetries(i * 1000)
+        expect(retries).to.be.gte(2)
+        expect(timeout).to.be.lte(1000)
+        expect(Number.isInteger(timeout)).to.be.true
+      }
+
+      const initialTimeout = computeRetries(uploadTimeout)[1]
+      const spyCalls = http.request.getCalls()
+      for (let i = 0; i < spyCalls.length; i++) {
+        const call = spyCalls[i]
+
+        // Verify number does not have decimals as this causes timer warnings
+        expect(Number.isInteger(call.args[0].timeout)).to.be.true
+
+        // Retry is 1-indexed so add 1 to i
+        expect(call.args[0].timeout)
+          .to.equal(initialTimeout * Math.pow(2, i + 1))
+      }
     })
 
     it('should log exports and handle http errors gracefully', async function () {
       this.timeout(10000)
       const expectedLogs = [
-        /^Building agent export report: (\n {2}[a-z-]+(\[\])?: [a-z0-9-TZ:.]+)+$/,
+        /^Building agent export report: (\n {2}[a-z-_]+(\[\])?: [a-z0-9-TZ:.]+)+$/m,
         /^Adding cpu profile to agent export:( [0-9a-f]{2})+$/,
         /^Adding heap profile to agent export:( [0-9a-f]{2})+$/,
         /^Submitting agent report to:/i,
@@ -286,10 +333,14 @@ describe('exporters/agent', () => {
           try {
             expect(req.body).to.have.property('language', 'javascript')
             expect(req.body).to.have.property('runtime', 'nodejs')
+            expect(req.body).to.have.property('runtime_version', process.version)
+            expect(req.body).to.have.property('profiler_version', version)
             expect(req.body).to.have.property('format', 'pprof')
             expect(req.body).to.have.deep.property('tags', [
               'language:javascript',
               'runtime:nodejs',
+              `runtime_version:${process.version}`,
+              `profiler_version:${version}`,
               'format:pprof',
               'foo:bar'
             ])

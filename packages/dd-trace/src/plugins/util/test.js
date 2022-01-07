@@ -1,4 +1,7 @@
+const path = require('path')
+
 const { getGitMetadata } = require('./git')
+const { getUserProviderGitMetadata } = require('./user-provided-git')
 const { getCIMetadata } = require('./ci')
 const { getRuntimeAndOSMetadata } = require('./env')
 const {
@@ -11,13 +14,17 @@ const {
   GIT_COMMIT_MESSAGE,
   CI_WORKSPACE_PATH
 } = require('./tags')
+const id = require('../../id')
 
 const TEST_FRAMEWORK = 'test.framework'
+const TEST_FRAMEWORK_VERSION = 'test.framework_version'
 const TEST_TYPE = 'test.type'
 const TEST_NAME = 'test.name'
 const TEST_SUITE = 'test.suite'
 const TEST_STATUS = 'test.status'
 const TEST_PARAMETERS = 'test.parameters'
+const TEST_SKIP_REASON = 'test.skip_reason'
+const TEST_IS_RUM_ACTIVE = 'test.is_rum_active'
 
 const ERROR_TYPE = 'error.type'
 const ERROR_MESSAGE = 'error.msg'
@@ -25,20 +32,28 @@ const ERROR_STACK = 'error.stack'
 
 const CI_APP_ORIGIN = 'ciapp-test'
 
+const JEST_TEST_RUNNER = 'test.jest.test_runner'
+
 module.exports = {
   TEST_FRAMEWORK,
+  TEST_FRAMEWORK_VERSION,
+  JEST_TEST_RUNNER,
   TEST_TYPE,
   TEST_NAME,
   TEST_SUITE,
   TEST_STATUS,
   TEST_PARAMETERS,
+  TEST_SKIP_REASON,
+  TEST_IS_RUM_ACTIVE,
   ERROR_TYPE,
   ERROR_MESSAGE,
   ERROR_STACK,
   CI_APP_ORIGIN,
   getTestEnvironmentMetadata,
   getTestParametersString,
-  finishAllTraceSpans
+  finishAllTraceSpans,
+  getTestParentSpan,
+  getTestSuitePath
 }
 
 function getTestEnvironmentMetadata (testFramework) {
@@ -66,12 +81,15 @@ function getTestEnvironmentMetadata (testFramework) {
     ciWorkspacePath
   })
 
+  const userProvidedGitMetadata = getUserProviderGitMetadata()
+
   const runtimeAndOSMetadata = getRuntimeAndOSMetadata()
 
   return {
     [TEST_FRAMEWORK]: testFramework,
     ...gitMetadata,
     ...ciMetadata,
+    ...userProvidedGitMetadata,
     ...runtimeAndOSMetadata
   }
 }
@@ -97,4 +115,25 @@ function finishAllTraceSpans (span) {
       traceSpan.finish()
     }
   })
+}
+
+function getTestParentSpan (tracer) {
+  return tracer.extract('text_map', {
+    'x-datadog-trace-id': id().toString(10),
+    'x-datadog-parent-id': '0000000000000000',
+    'x-datadog-sampled': 1
+  })
+}
+/**
+ * We want to make sure that test suites are reported the same way for
+ * every OS, so we replace `path.sep` by `/`
+ */
+function getTestSuitePath (testSuiteAbsolutePath, sourceRoot) {
+  if (!testSuiteAbsolutePath) {
+    return sourceRoot
+  }
+  const testSuitePath = testSuiteAbsolutePath === sourceRoot
+    ? testSuiteAbsolutePath : path.relative(sourceRoot, testSuiteAbsolutePath)
+
+  return testSuitePath.replace(path.sep, '/')
 }

@@ -28,6 +28,24 @@ commands:
           paths:
             - ./node_modules
             - ./yarn.lock
+  store-test-results-and-coverage:
+    steps:
+      - store_test_results:
+          path: test-results
+          when: always
+      - run:
+          name: Upload JUnit XML Report
+          command: yarn junit:upload
+          when: always
+      - run:
+          name: Merge coverage report
+          command: yarn cover:merge
+      - store_artifacts:
+          path: ./coverage
+      - persist_to_workspace:
+          root: ~/dd-trace-js
+          paths:
+            - .nyc_merge/*
 
 node-core-base: &node-core-base
   resource_class: small
@@ -37,23 +55,8 @@ node-core-base: &node-core-base
     - &yarn-test-core
       run:
         name: Unit tests
-        command: yarn test:core:ci
-    - store_test_results:
-        path: test-results
-        when: always
-    - run:
-        name: Upload JUnit XML Report
-        command: yarn junit:upload
-        when: always
-    - run:
-        name: Merge coverage report
-        command: yarn cover:merge
-    - store_artifacts:
-        path: ./coverage
-    - persist_to_workspace:
-        root: ~/dd-trace-js
-        paths:
-          - .nyc_merge/*
+        command: yarn test:trace:core:ci
+    - store-test-results-and-coverage
 
 node-bench-base: &node-bench-base
   resource_class: small
@@ -149,22 +152,7 @@ node-plugin-base: &node-plugin-base
     - run:
         name: Unit tests
         command: PLUGINS=$(cat /tmp/dd_plugins_var) yarn test:plugins:ci
-    - store_test_results:
-        path: test-results
-        when: always
-    - run:
-        name: Upload JUnit XML Report
-        command: yarn junit:upload
-        when: always
-    - run:
-        name: Merge coverage report
-        command: yarn cover:merge
-    - store_artifacts:
-        path: ./coverage
-    - persist_to_workspace:
-        root: ~/dd-trace-js
-        paths:
-          - .nyc_merge/*
+    - store-test-results-and-coverage
 
 node-upstream-base: &node-upstream-base
   parameters:
@@ -238,6 +226,10 @@ jobs:
 
   node-bench-sirun-profiler: *node-bench-sirun-base
 
+  node-bench-sirun-plugin-dns: *node-bench-sirun-base
+
+  node-bench-sirun-plugin-graphql: *node-bench-sirun-base
+
   node-bench-sirun-all:
     docker:
       - image: node
@@ -256,6 +248,23 @@ jobs:
             node ~/dd-trace-js/benchmark/sirun/diff-recent | tee /tmp/artifacts/diff.json
       - store_artifacts:
           path: /tmp/artifacts
+
+  # Shimmer tests
+
+  shimmer:
+    parameters:
+      node-version:
+        type: string
+    docker:
+      - image: node:<< parameters.node-version >>
+    resource_class: small
+    working_directory: ~/dd-trace-js
+    steps:
+      - checkout-and-yarn-install
+      - run:
+          name: Unit tests
+          command: yarn test:shimmer:ci
+      - store-test-results-and-coverage
 
   # Core tests
 
@@ -326,6 +335,7 @@ jobs:
 
   node-aws-sdk:
     <<: *node-plugin-base
+    resource_class: medium
     docker:
       - image: node:<< parameters.node-version >>
         environment:
@@ -354,6 +364,7 @@ jobs:
 
   node-cassandra:
     <<: *node-plugin-base
+    resource_class: medium
     docker:
       - image: node:<< parameters.node-version >>
         environment:
@@ -375,6 +386,11 @@ jobs:
           - SERVICES=couchbase
           - PLUGINS=couchbase
       - image: rishabhdev/couchbase-server-sandbox:latest
+
+  node-cypress:
+    <<: *node-plugin-base
+    docker:
+      - image: cypress/base:<< parameters.node-version >>
 
   node-dns: *node-plugin-base
 
@@ -491,7 +507,7 @@ jobs:
         environment:
           - SERVICES=mysql
           - PLUGINS=mysql|mysql2
-      - image: mysql:5.7
+      - image: mariadb:10.4
         environment:
           - MYSQL_ALLOW_EMPTY_PASSWORD=yes
           - MYSQL_DATABASE=db
@@ -512,7 +528,7 @@ jobs:
         environment:
           - SERVICES=mongo
           - PLUGINS=mongoose
-      - image: circleci/mongo:3.4
+      - image: circleci/mongo:3.6
 
   node-net: *node-plugin-base
 
@@ -530,7 +546,9 @@ jobs:
 
   node-paperplane: *node-plugin-base
 
-  node-pino: *node-plugin-base
+  node-pino:
+    <<: *node-plugin-base
+    resource_class: medium
 
   node-postgres:
     <<: *node-plugin-base
@@ -607,6 +625,7 @@ jobs:
 
   node-upstream-amqplib:
     <<: *node-upstream-base
+    resource_class: medium
     docker:
       - image: node:<< parameters.node-version >>
         environment:
@@ -631,7 +650,9 @@ jobs:
 
   node-upstream-graphql: *node-upstream-base
 
-  node-upstream-koa: *node-upstream-base
+  node-upstream-koa:
+    <<: *node-upstream-base
+    resource_class: large
 
   node-upstream-pino: *node-upstream-base
 
@@ -687,6 +708,7 @@ workflows:
             parameters:
               node-version: ["12", "14", "16", "latest"]
       - node-core-windows
+      - shimmer: *matrix-supported-node-versions
       - node-integration: *matrix-supported-node-versions
       - node-amqplib: *matrix-supported-node-versions
       - node-amqp10: *matrix-supported-node-versions
@@ -701,6 +723,11 @@ workflows:
             parameters:
               node-version: ["12"]
       - node-cucumber: *matrix-supported-node-versions
+      # There's no cypress/base image for node 16
+      - node-cypress:
+          matrix:
+              parameters:
+                node-version: ["12", "14"]
       - node-dns: *matrix-supported-node-versions
       - node-elasticsearch: *matrix-supported-node-versions
       - node-express: *matrix-supported-node-versions
@@ -754,6 +781,7 @@ workflows:
       - node-winston: *matrix-supported-node-versions
       - codecov:
           requires:
+            - shimmer
             - node-core
             - node-amqplib
             - node-amqp10
@@ -764,6 +792,7 @@ workflows:
             - node-connect
             - node-couchbase
             - node-cucumber
+            - node-cypress
             - node-dns
             - node-elasticsearch
             - node-express
@@ -791,7 +820,7 @@ workflows:
             - node-next
             - node-oracledb
             - node-paperplane
-            - node-pino
+            # - node-pino
             - node-postgres
             - node-promise-js
             - node-promise
@@ -823,6 +852,8 @@ workflows:
       - node-bench-sirun-scope: *matrix-exact-supported-node-versions
       - node-bench-sirun-exporting-pipeline: *matrix-exact-supported-node-versions
       - node-bench-sirun-profiler: *matrix-exact-supported-node-versions
+      - node-bench-sirun-plugin-dns: *matrix-exact-supported-node-versions
+      - node-bench-sirun-plugin-graphql: *matrix-exact-supported-node-versions
       - node-bench-sirun-all:
           requires:
             - node-bench-sirun-startup
@@ -837,17 +868,24 @@ workflows:
             - node-bench-sirun-scope
             - node-bench-sirun-exporting-pipeline
             - node-bench-sirun-profiler
+            - node-bench-sirun-plugin-dns
+            - node-bench-sirun-plugin-graphql
   upstream: &upstream-jobs
     jobs:
       # - node-upstream-node
       - node-upstream-amqp10: *matrix-supported-node-versions
-      - node-upstream-amqplib: *matrix-supported-node-versions
+      # TODO: Figure out why `npm install` always times out on Node 16.
+      - node-amqplib:
+          matrix:
+              parameters:
+                node-version: ["12", "14"]
       - node-upstream-axios: *matrix-supported-node-versions
       - node-upstream-bunyan: *matrix-supported-node-versions
       - node-upstream-connect: *matrix-supported-node-versions
       - node-upstream-graphql: *matrix-supported-node-versions
       - node-upstream-koa: *matrix-supported-node-versions
-      - node-upstream-pino: *matrix-supported-node-versions
+      # TODO: re-enable if it ever stops being flaky
+      # - node-upstream-pino: *matrix-supported-node-versions
       - node-upstream-promise: *matrix-supported-node-versions
       - node-upstream-q: *matrix-supported-node-versions
 

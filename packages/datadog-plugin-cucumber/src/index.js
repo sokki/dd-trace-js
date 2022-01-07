@@ -1,5 +1,3 @@
-const { relative } = require('path')
-
 const { SAMPLING_RULE_DECISION } = require('../../dd-trace/src/constants')
 
 const {
@@ -7,10 +5,13 @@ const {
   TEST_NAME,
   TEST_SUITE,
   TEST_STATUS,
+  TEST_FRAMEWORK_VERSION,
+  TEST_SKIP_REASON,
   CI_APP_ORIGIN,
   ERROR_MESSAGE,
   getTestEnvironmentMetadata,
-  finishAllTraceSpans
+  finishAllTraceSpans,
+  getTestSuitePath
 } = require('../../dd-trace/src/plugins/util/test')
 
 function setStatusFromResult (span, result, tag) {
@@ -18,10 +19,9 @@ function setStatusFromResult (span, result, tag) {
     span.setTag(tag, 'pass')
   } else if (result.status === 2) {
     span.setTag(tag, 'skip')
-    span.setTag(ERROR_MESSAGE, 'skipped')
   } else if (result.status === 4) {
     span.setTag(tag, 'skip')
-    span.setTag(ERROR_MESSAGE, 'not implemented')
+    span.setTag(TEST_SKIP_REASON, 'not implemented')
   } else {
     span.setTag(tag, 'fail')
     span.setTag(ERROR_MESSAGE, result.message)
@@ -31,26 +31,29 @@ function setStatusFromResult (span, result, tag) {
 function setStatusFromResultLatest (span, result, tag) {
   if (result.status === 'PASSED') {
     span.setTag(tag, 'pass')
-  } else if (result.status === 'SKIPPED' || result.status === 'PENDING' || result.status === 'UNDEFINED') {
+  } else if (result.status === 'SKIPPED' || result.status === 'PENDING') {
     span.setTag(tag, 'skip')
-    span.setTag(ERROR_MESSAGE, result.message || 'skipped')
+  } else if (result.status === 'UNDEFINED') {
+    span.setTag(tag, 'skip')
+    span.setTag(TEST_SKIP_REASON, 'not implemented')
   } else {
     span.setTag(tag, 'fail')
     span.setTag(ERROR_MESSAGE, result.message)
   }
 }
 
-function createWrapRun (tracer, testEnvironmentMetadata, getTestSuiteName, setStatus) {
+function createWrapRun (tracer, testEnvironmentMetadata, sourceRoot, setStatus) {
   return function wrapRun (run) {
     return function handleRun () {
       const testName = this.pickle.name
-      const testSuite = getTestSuiteName(this.pickle.uri)
+      const testSuite = getTestSuitePath(this.pickle.uri, sourceRoot)
 
       const commonSpanTags = {
         [TEST_TYPE]: 'test',
         [TEST_NAME]: testName,
         [TEST_SUITE]: testSuite,
         [SAMPLING_RULE_DECISION]: 1,
+        [TEST_FRAMEWORK_VERSION]: tracer._version,
         ...testEnvironmentMetadata
       }
 
@@ -103,14 +106,11 @@ module.exports = [
     patch (PickleRunner, tracer) {
       const testEnvironmentMetadata = getTestEnvironmentMetadata('cucumber')
       const sourceRoot = process.cwd()
-      const getTestSuiteName = (pickleUri) => {
-        return relative(sourceRoot, pickleUri)
-      }
       const pl = PickleRunner.default
       this.wrap(
         pl.prototype,
         'run',
-        createWrapRun(tracer, testEnvironmentMetadata, getTestSuiteName, setStatusFromResult)
+        createWrapRun(tracer, testEnvironmentMetadata, sourceRoot, setStatusFromResult)
       )
       const getResourceName = (testStep) => {
         return testStep.isHook ? 'hook' : testStep.pickleStep.text
@@ -130,14 +130,11 @@ module.exports = [
     patch (TestCaseRunner, tracer) {
       const testEnvironmentMetadata = getTestEnvironmentMetadata('cucumber')
       const sourceRoot = process.cwd()
-      const getTestSuiteName = (pickleUri) => {
-        return relative(sourceRoot, pickleUri)
-      }
       const pl = TestCaseRunner.default
       this.wrap(
         pl.prototype,
         'run',
-        createWrapRun(tracer, testEnvironmentMetadata, getTestSuiteName, setStatusFromResultLatest)
+        createWrapRun(tracer, testEnvironmentMetadata, sourceRoot, setStatusFromResultLatest)
       )
       const getResourceName = (testStep) => {
         return testStep.text

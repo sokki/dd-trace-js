@@ -7,17 +7,18 @@ const codec = msgpack.createCodec({ int64: true })
 const getPort = require('get-port')
 const express = require('express')
 const path = require('path')
+const ritm = require('../../src/ritm')
 
 const handlers = new Set()
 let sockets = []
 let agent = null
-let server = null
 let listener = null
 let tracer = null
+let plugins = []
 
 module.exports = {
   // Load the plugin on the tracer with an optional config and start a mock agent.
-  load (pluginName, config) {
+  load (pluginName, config, tracerConfig = {}) {
     tracer = require('../..')
     agent = express()
     agent.use(bodyParser.raw({ limit: Infinity, type: 'application/msgpack' }))
@@ -38,12 +39,14 @@ module.exports = {
 
     return getPort().then(port => {
       return new Promise((resolve, reject) => {
-        server = http.createServer(agent)
+        const server = this.server = http.createServer(agent)
+
         server.on('connection', socket => sockets.push(socket))
 
-        listener = server.listen(port, 'localhost', resolve)
+        listener = server.listen(port, () => resolve())
 
         pluginName = [].concat(pluginName)
+        plugins = pluginName
         config = [].concat(config)
 
         server.on('close', () => {
@@ -51,12 +54,12 @@ module.exports = {
           tracer = null
         })
 
-        tracer.init({
+        tracer.init(Object.assign({}, {
           service: 'test',
           port,
           flushInterval: 0,
           plugins: false
-        })
+        }, tracerConfig))
 
         for (let i = 0, l = pluginName.length; i < l; i++) {
           tracer.use(pluginName[i], config[i])
@@ -128,7 +131,8 @@ module.exports = {
   },
 
   // Stop the mock agent, reset all expectations and wipe the require cache.
-  close () {
+  close (opts = {}) {
+    const { ritmReset } = opts
     this.wipe()
 
     listener.close()
@@ -137,12 +141,18 @@ module.exports = {
     sockets = []
     agent = null
     handlers.clear()
+    if (ritmReset !== false) {
+      ritm.reset()
+    }
     delete require.cache[require.resolve('../..')]
+    for (const plugin of plugins) {
+      tracer.use(plugin, { enabled: false })
+    }
     delete global._ddtrace
 
     return new Promise((resolve, reject) => {
-      server.on('close', () => {
-        server = null
+      this.server.on('close', () => {
+        this.server = null
 
         resolve()
       })

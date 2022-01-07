@@ -18,7 +18,8 @@ const {
   ERROR_TYPE,
   ERROR_MESSAGE,
   ERROR_STACK,
-  CI_APP_ORIGIN
+  CI_APP_ORIGIN,
+  TEST_FRAMEWORK_VERSION
 } = require('../../dd-trace/src/plugins/util/test')
 
 const ASYNC_TESTS = [
@@ -98,7 +99,6 @@ describe('Plugin', () => {
     })
     describe('mocha', () => {
       it('works with passing tests', (done) => {
-        if (process.env.DD_CONTEXT_PROPAGATION === 'false') return done()
         const testFilePath = path.join(__dirname, 'mocha-test-pass.js')
         const testNames = [
           'mocha-test-pass can pass',
@@ -113,6 +113,7 @@ describe('Plugin', () => {
             expect(testSpan.meta[TEST_STATUS]).to.equal('pass')
             expect(testSpan.meta[TEST_NAME]).to.equal(testName)
             expect(testSpan.meta[ORIGIN_KEY]).to.equal(CI_APP_ORIGIN)
+            expect(testSpan.meta[TEST_FRAMEWORK_VERSION]).not.to.be.undefined
           })
         })
         Promise.all(assertionPromises)
@@ -126,7 +127,6 @@ describe('Plugin', () => {
         mocha.run()
       })
       it('works with failing tests', (done) => {
-        if (process.env.DD_CONTEXT_PROPAGATION === 'false') return done()
         const testFilePath = path.join(__dirname, 'mocha-test-fail.js')
         const testSuite = testFilePath.replace(`${process.cwd()}/`, '')
         agent
@@ -160,7 +160,6 @@ describe('Plugin', () => {
         mocha.run()
       })
       it('works with skipping tests', (done) => {
-        if (process.env.DD_CONTEXT_PROPAGATION === 'false') return done()
         const testFilePath = path.join(__dirname, 'mocha-test-skip.js')
         const testNames = [
           'mocha-test-skip can skip',
@@ -227,7 +226,6 @@ describe('Plugin', () => {
       })
 
       it('works for parameterized tests', (done) => {
-        if (process.env.DD_CONTEXT_PROPAGATION === 'false') return done()
         const testFilePath = path.join(__dirname, 'mocha-test-parameterized.js')
         const testSuite = testFilePath.replace(`${process.cwd()}/`, '')
         agent
@@ -258,7 +256,6 @@ describe('Plugin', () => {
       })
 
       it('works with integrations', (done) => {
-        if (process.env.DD_CONTEXT_PROPAGATION === 'false') return done()
         const testFilePath = path.join(__dirname, 'mocha-test-integration.js')
 
         agent.use(trace => {
@@ -280,7 +277,6 @@ describe('Plugin', () => {
       })
 
       it('works with http integration', (done) => {
-        if (process.env.DD_CONTEXT_PROPAGATION === 'false') return done()
         const testFilePath = path.join(__dirname, 'mocha-test-integration-http.js')
         const testSuite = testFilePath.replace(`${process.cwd()}/`, '')
 
@@ -310,16 +306,21 @@ describe('Plugin', () => {
       })
 
       it('works with sync errors in the hooks', (done) => {
-        if (process.env.DD_CONTEXT_PROPAGATION === 'false') return done()
         const testFilePath = path.join(__dirname, 'mocha-fail-hook-sync.js')
 
         agent.use(traces => {
           const testSpan = traces[0][0]
           expect(testSpan.meta).to.contain({
-            [ERROR_TYPE]: 'TypeError',
-            [ERROR_MESSAGE]: `"before each" hook for "will not run but be reported as failed": \
-Cannot set property 'error' of undefined`
+            [ERROR_TYPE]: 'TypeError'
           })
+          expect(testSpan.meta[ERROR_TYPE]).to.equal('TypeError')
+          const beginning = `"before each" hook for "will not run but be reported as failed": `
+          expect(testSpan.meta[ERROR_MESSAGE].startsWith(beginning)).to.equal(true)
+          const errorMsg = testSpan.meta[ERROR_MESSAGE].replace(beginning, '')
+          expect(
+            errorMsg === `Cannot set property 'error' of undefined` ||
+            errorMsg === `Cannot set properties of undefined (setting 'error')`
+          ).to.equal(true)
           expect(testSpan.meta[ERROR_STACK]).not.to.be.undefined
         }).then(done, done)
 
@@ -331,7 +332,6 @@ Cannot set property 'error' of undefined`
       })
 
       it('works with async errors in the hooks', (done) => {
-        if (process.env.DD_CONTEXT_PROPAGATION === 'false') return done()
         const testFilePath = path.join(__dirname, 'mocha-fail-hook-async.js')
 
         agent.use(traces => {
@@ -351,7 +351,6 @@ Timeout of 100ms exceeded. For async tests and hooks, ensure "done()" is called;
       })
 
       it('works with async tests with done fail', (done) => {
-        if (process.env.DD_CONTEXT_PROPAGATION === 'false') return done()
         // necessary because we run mocha within mocha and mocha adds a handler for uncaughtExceptions.
         // If we don't do this, the handler for the parent test (this test) will be called
         // first and not the one for mocha-test-done-fail-badly.js (test we are testing).
@@ -365,6 +364,44 @@ Timeout of 100ms exceeded. For async tests and hooks, ensure "done()" is called;
           expect(testSpan.meta[TEST_STATUS]).to.equal('fail')
           expect(testSpan.meta[TEST_NAME]).to.equal('mocha-test-done-fail can do badly setup failed tests with done')
         }).then(done, done)
+        const mocha = new Mocha({
+          reporter: function () {} // silent on internal tests
+        })
+        mocha.addFile(testFilePath)
+        mocha.run()
+      })
+
+      it('works with retries', (done) => {
+        const testFilePath = path.join(__dirname, 'mocha-test-retries.js')
+
+        let numTestSpans = 0
+
+        // Handler that always fails to be run for every trace that is generated.
+        // This way, the number of test spans is counted.
+        agent.use(trace => {
+          const testSpan = trace[0][0]
+          if (testSpan.type === 'test') {
+            numTestSpans++
+          }
+          expect(true).to.equal(false)
+        })
+
+        const assertionPromises = ['fail', 'pass'].map((testStatus, index) => {
+          return agent.use(trace => {
+            const testSpan = trace[0][0]
+            // expect(testSpan.meta.attempt).to.equal(`${index}`)
+            expect(testSpan.meta[TEST_STATUS]).to.equal(testStatus)
+          })
+        })
+
+        Promise.all(assertionPromises)
+          .then(() => {
+            // it will fail twice and pass at the third time
+            expect(numTestSpans).to.equal(3)
+            done()
+          })
+          .catch(done)
+
         const mocha = new Mocha({
           reporter: function () {} // silent on internal tests
         })

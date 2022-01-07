@@ -4,8 +4,6 @@ const semver = require('semver')
 const agent = require('../../dd-trace/test/plugins/agent')
 const plugin = require('../src')
 
-wrapIt()
-
 const withTopologies = fn => {
   withVersions(plugin, 'mongodb', (version, moduleName) => {
     describe('using the default topology', () => {
@@ -20,7 +18,7 @@ const withTopologies = fn => {
     })
 
     // unified topology is now the only topology and thus the default since 4.x
-    if (semver.intersects(version, '<4')) {
+    if (!semver.intersects(version, '>=4')) {
       describe('using the unified topology', () => {
         fn(async () => {
           const { MongoClient, Server } = require(`../../../versions/${moduleName}@${version}`).get()
@@ -183,8 +181,6 @@ describe('Plugin', () => {
           })
 
           it('should run the callback in the parent context', done => {
-            if (process.env.DD_CONTEXT_PROPAGATION === 'false') return done()
-
             collection.insertOne({ a: 1 }, {}, () => {
               expect(tracer.scope().active()).to.be.null
               done()

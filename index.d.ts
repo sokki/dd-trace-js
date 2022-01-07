@@ -286,12 +286,6 @@ export declare interface TracerOptions {
   runtimeMetrics?: boolean
 
   /**
-   * Whether to track the scope of async functions. This is needed for async/await to work with non-native promises (thenables). Only disable this if you are sure only native promises are used with async/await, or if you are using Node >=14.5 since the issue has been fixed in that version.
-   * @default true
-   */
-  trackAsyncScope?: boolean
-
-  /**
    * Custom function for DNS lookups when sending requests to the agent.
    * @default dns.lookup()
    */
@@ -488,6 +482,7 @@ interface Plugins {
   "connect": plugins.connect;
   "couchbase": plugins.couchbase;
   "cucumber": plugins.cucumber;
+  "cypress": plugins.cypress;
   "dns": plugins.dns;
   "elasticsearch": plugins.elasticsearch;
   "express": plugins.express;
@@ -795,6 +790,12 @@ declare namespace plugins {
 
   /**
    * This plugin automatically instruments the
+   * [cypress](https://github.com/cypress-io/cypress) module.
+   */
+  interface cypress extends Integration {}
+
+  /**
+   * This plugin automatically instruments the
    * [dns](https://nodejs.org/api/dns.html) module.
    */
   interface dns extends Instrumentation {}
@@ -971,12 +972,12 @@ declare namespace plugins {
     /**
      * Configuration for HTTP clients.
      */
-    client?: HttpClient,
+    client?: HttpClient | boolean,
 
     /**
      * Configuration for HTTP servers.
      */
-    server?: HttpServer
+    server?: HttpServer | boolean
 
     /**
      * Hooks to run before spans are finished.
@@ -1005,12 +1006,12 @@ declare namespace plugins {
     /**
      * Configuration for HTTP clients.
      */
-    client?: Http2Client,
+    client?: Http2Client | boolean,
 
     /**
      * Configuration for HTTP servers.
      */
-    server?: Http2Server
+    server?: Http2Server | boolean
   }
 
   /**
